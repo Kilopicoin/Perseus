@@ -1,0 +1,28 @@
+/* Reset + base */
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: #0b0d12;           /* page background (change if you like) */
+  color: #e6f0ff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Center the content perfectly */
+.centered {
+  min-height: 100dvh;            /* viewport height incl. mobile UI */
+  display: grid;
+  place-items: center;           /* centers both horizontally & vertically */
+  padding: 2rem;
+}
+
+/* Image sizing + nice presentation */
+.ship {
+  width: 100%;
+  max-width: 820px;              /* cap the size; adjust as needed */
+  height: auto;
+  filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.6)); /* optional glow/shadow */
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+}
