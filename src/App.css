@@ -11,18 +11,32 @@ body {
 
 /* Center the content perfectly */
 .centered {
-  min-height: 100dvh;            /* viewport height incl. mobile UI */
-  display: grid;
-  place-items: center;           /* centers both horizontally & vertically */
+  min-height: 100dvh;            
+  display: flex;
+  flex-direction: column;        /* stack items vertically */
+  justify-content: center;
+  align-items: center;
   padding: 2rem;
+  gap: 1rem;                     /* spacing between link and image */
 }
+
+.github-icon {
+  color: #e6f0ff;
+  transition: color 0.2s ease, transform 0.2s ease;
+}
+
+.github-icon:hover {
+  color: #58a6ff;
+  transform: scale(1.1);
+}
+
 
 /* Image sizing + nice presentation */
 .ship {
   width: 100%;
-  max-width: 820px;              /* cap the size; adjust as needed */
+  max-width: 600px;              
   height: auto;
-  filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.6)); /* optional glow/shadow */
+  filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.6)); 
   image-rendering: -webkit-optimize-contrast;
   image-rendering: crisp-edges;
 }
