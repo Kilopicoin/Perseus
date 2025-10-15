@@ -1,208 +1,263 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo, useState } from "react";
 import "./App.css";
 
-/**
- * Minimal, responsive 10x10 grid for an on-chain space game.
- * - Click/tap a cell to select
- * - Arrow keys to move selection
- * - Zoom with +/- or mouse wheel (desktop)
- * - Deterministic "planet" layout via seeded RNG
- */
+/** ---------- Config ---------- */
+const GRID_SIZE = 11;                 // 11x11
+const TILE_W = 96;                    // tile width
+const TILE_H = 48;                    // tile height (isometric diamond)
+const PLANET_DENSITY = 0.18;          // ~18% of tiles get planets
+const SEED_DEFAULT = 1337;
 
-const GRID_SIZE = 11;
-const SEED = "crownless-stars-1";
-
-// Tiny seeded RNG (Mulberry32)
-function mulberry32(seed) {
-  let t = 0;
-  for (let i = 0; i < seed.length; i++) t = (t + seed.charCodeAt(i)) | 0;
-  let a = t || 1;
+/** ---------- Utilities ---------- */
+function mulberry32(a) {
+  // tiny seeded PRNG for repeatable randomness
   return function () {
-    a |= 0;
-    a = (a + 0x6D2B79F5) | 0;
-    let t_ = Math.imul(a ^ (a >>> 15), 1 | a);
-    t_ ^= t_ + Math.imul(t_ ^ (t_ >>> 7), 61 | t_);
-    return ((t_ ^ (t_ >>> 14)) >>> 0) / 4294967296;
+    let t = (a += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
-// Build a deterministic board with ~28% cells having planets
-function generateBoard() {
-  const rand = mulberry32(SEED);
-  const cells = [];
-  for (let y = 0; y < GRID_SIZE; y++) {
-    for (let x = 0; x < GRID_SIZE; x++) {
-      const r = rand();
-      const hasPlanet = r < 0.28;
-      let size = 0;
-      let kind = null;
-      if (hasPlanet) {
-        // Size buckets & planet kinds for visual flavor
-        const bucket = r < 0.10 ? "large" : r < 0.18 ? "medium" : "small";
-        size = bucket === "large" ? 68 : bucket === "medium" ? 52 : 38;
-        const kinds = ["ice", "desert", "terra", "gas"];
-        kind = kinds[Math.floor(rand() * kinds.length)];
-      }
-      cells.push({
-        id: `${x}-${y}`,
-        x,
-        y,
-        hasPlanet,
-        size,
-        kind,
-        // Placeholder on-chain attributes you can replace with contract reads later:
-        owner: null,
-        level: hasPlanet ? 1 + Math.floor(rand() * 3) : 0,
-        resources: hasPlanet
-          ? { metal: Math.floor(rand() * 100), crystal: Math.floor(rand() * 100) }
-          : null,
-      });
-    }
-  }
-  return cells;
+function isoPos(row, col) {
+  // classic isometric (diamond) projection
+  const x = (col - row) * (TILE_W / 2);
+  const y = (col + row) * (TILE_H / 2);
+  return { x, y };
 }
 
-function useKeyNavigation(selected, setSelected) {
-  useEffect(() => {
-    function onKey(e) {
-      if (!selected) return;
-      const [x, y] = selected.split("-").map(Number);
-      let nx = x, ny = y;
-      if (e.key === "ArrowLeft") nx = Math.max(0, x - 1);
-      if (e.key === "ArrowRight") nx = Math.min(GRID_SIZE - 1, x + 1);
-      if (e.key === "ArrowUp") ny = Math.max(0, y - 1);
-      if (e.key === "ArrowDown") ny = Math.min(GRID_SIZE - 1, y + 1);
-      const nid = `${nx}-${ny}`;
-      if (nid !== selected) setSelected(nid);
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selected, setSelected]);
+function tilePath() {
+  const w2 = TILE_W / 2;
+  const h = TILE_H / 2;
+  return `M 0 ${-h} L ${w2} 0 L 0 ${h} L ${-w2} 0 Z`;
 }
 
-export default function App() {
-  const board = useMemo(generateBoard, []);
-  const [selectedId, setSelectedId] = useState("0-0");
-  const [zoom, setZoom] = useState(1);
-  const gridRef = useRef(null);
+/** Planet palette & renderers (pure SVG) */
+const PLANET_TYPES = [
+  "terran",
+  "desert",
+  "ice",
+  "lava",
+  "gas",
+  "metallic",
+];
 
-  useKeyNavigation(selectedId, setSelectedId);
+function planetDefs() {
+  // gradients, glows, etc.
+  return (
+    <defs>
+      {/* soft stars glow */}
+      <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="6" result="coloredBlur" />
+        <feMerge>
+          <feMergeNode in="coloredBlur" />
+          <feMergeNode in="SourceGraphic" />
+        </feMerge>
+      </filter>
 
-  const selectedCell = useMemo(
-    () => board.find((c) => c.id === selectedId),
-    [board, selectedId]
+      {/* drop shadow for planets */}
+      <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+        <feDropShadow dx="0" dy="2" stdDeviation="2" floodOpacity="0.5" />
+      </filter>
+
+      {/* planet gradient styles */}
+      <radialGradient id="grad-terran" cx="35%" cy="35%" r="70%">
+        <stop offset="0%" stopColor="#c8ffe6" />
+        <stop offset="45%" stopColor="#2b9aa0" />
+        <stop offset="100%" stopColor="#0b3450" />
+      </radialGradient>
+
+      <radialGradient id="grad-desert" cx="35%" cy="35%" r="70%">
+        <stop offset="0%" stopColor="#fff2c5" />
+        <stop offset="50%" stopColor="#e0a34c" />
+        <stop offset="100%" stopColor="#8b4a1f" />
+      </radialGradient>
+
+      <radialGradient id="grad-ice" cx="35%" cy="35%" r="70%">
+        <stop offset="0%" stopColor="#ffffff" />
+        <stop offset="55%" stopColor="#a8e8ff" />
+        <stop offset="100%" stopColor="#3a6ea8" />
+      </radialGradient>
+
+      <radialGradient id="grad-lava" cx="40%" cy="40%" r="70%">
+        <stop offset="0%" stopColor="#fff0a8" />
+        <stop offset="50%" stopColor="#ff6b3d" />
+        <stop offset="100%" stopColor="#6b0b0b" />
+      </radialGradient>
+
+      <radialGradient id="grad-metal" cx="35%" cy="35%" r="70%">
+        <stop offset="0%" stopColor="#f2f2f2" />
+        <stop offset="60%" stopColor="#9aa3ad" />
+        <stop offset="100%" stopColor="#3e4750" />
+      </radialGradient>
+
+      {/* gas giant banding */}
+      <pattern id="gas-bands" width="12" height="12" patternUnits="userSpaceOnUse">
+        <rect width="12" height="12" fill="#7a5ea8" />
+        <rect y="3" width="12" height="3" fill="#a08ad1" opacity="0.9" />
+        <rect y="8" width="12" height="2.8" fill="#5b3f8f" opacity="0.9" />
+      </pattern>
+      <radialGradient id="grad-gas" cx="35%" cy="35%" r="70%">
+        <stop offset="0%" stopColor="#d9c9ff" />
+        <stop offset="60%" stopColor="#b39ce6" />
+        <stop offset="100%" stopColor="#5b3f8f" />
+      </radialGradient>
+
+      {/* nebula blobs */}
+      <radialGradient id="nebulaPurple" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stopColor="#b46cff" stopOpacity="0.55" />
+        <stop offset="100%" stopColor="#301146" stopOpacity="0" />
+      </radialGradient>
+    </defs>
   );
+}
 
-  // Mouse-wheel zoom (desktop)
-  useEffect(() => {
-    const el = gridRef.current;
-    if (!el) return;
-    const onWheel = (e) => {
-      if (!e.ctrlKey && Math.abs(e.deltaY) < 20) return; // gentler, require intent
-      e.preventDefault();
-      setZoom((z) => {
-        const next = e.deltaY > 0 ? z * 0.9 : z * 1.1;
-        return Math.max(0.6, Math.min(2.2, next));
-      });
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
+function Planet({ type, r = 18 }) {
+  const stroke = "rgba(255,255,255,0.35)";
+
+  if (type === "gas") {
+    return (
+      <g filter="url(#shadow)">
+        <circle r={r} fill="url(#grad-gas)" />
+        <circle r={r - 1} fill="url(#gas-bands)" opacity="0.9" clipPath={`inset(0 round ${r}px)`} />
+        {/* ring */}
+        <ellipse rx={r + 10} ry={r / 2.3} fill="none" stroke="#cbb7ff" strokeOpacity="0.7" strokeWidth="2" transform="rotate(-18)" />
+        <circle r={r} fill="transparent" stroke={stroke} strokeWidth="0.8" />
+      </g>
+    );
+  }
+
+  const fillId =
+    type === "terran" ? "url(#grad-terran)" :
+    type === "desert" ? "url(#grad-desert)" :
+    type === "ice" ? "url(#grad-ice)" :
+    type === "lava" ? "url(#grad-lava)" :
+    "url(#grad-metal)";
+
+  return (
+    <g filter="url(#shadow)">
+      <circle r={r} fill={fillId} />
+      <circle r={r} fill="none" stroke={stroke} strokeWidth="0.8" />
+      <circle cx="-7" cy="-7" r={r*0.45} fill="white" opacity="0.12" />
+    </g>
+  );
+}
+
+/** ---------- Planet placement ---------- */
+function useGalaxy(seed) {
+  const rnd = useMemo(() => mulberry32(seed), [seed]);
+
+  // grid tiles
+  const tiles = useMemo(() => {
+    const list = [];
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        const { x, y } = isoPos(r, c);
+        list.push({ id: `${r}-${c}`, r, c, x, y });
+      }
+    }
+    return list;
   }, []);
 
-  // Keep selection visible on small screens by auto-scrolling into view
-  useEffect(() => {
-    const el = document.getElementById(`cell-${selectedId}`);
-    if (el && "scrollIntoView" in el) {
-      el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  // choose random tiles for planets
+  const planets = useMemo(() => {
+    const p = [];
+    const total = GRID_SIZE * GRID_SIZE;
+    const count = Math.max(8, Math.floor(total * PLANET_DENSITY));
+    const used = new Set();
+    while (p.length < count) {
+      const r = Math.floor(rnd() * GRID_SIZE);
+      const c = Math.floor(rnd() * GRID_SIZE);
+      const key = `${r}-${c}`;
+      if (used.has(key)) continue;
+      used.add(key);
+      const type = PLANET_TYPES[Math.floor(rnd() * PLANET_TYPES.length)];
+      p.push({ key, r, c, type });
     }
-  }, [selectedId]);
+    return p;
+  }, [rnd]);
 
-  const onZoomIn = () => setZoom((z) => Math.min(2.2, z + 0.1));
-  const onZoomOut = () => setZoom((z) => Math.max(0.6, z - 0.1));
+  // ViewBox bounds
+  const minX = (-(GRID_SIZE - 1) * (TILE_W / 2)) - TILE_W;
+  const maxX = ((GRID_SIZE - 1) * (TILE_W / 2)) + TILE_W;
+  const minY = 0 - TILE_H;
+  const maxY = (GRID_SIZE - 1 + GRID_SIZE - 1) * (TILE_H / 2) + TILE_H;
+
+  return { tiles, planets, viewBox: `${minX} ${minY} ${maxX - minX} ${maxY - minY}` };
+}
+
+/** ---------- App ---------- */
+export default function App() {
+  const [seed, setSeed] = useState(SEED_DEFAULT);
+  const { tiles, planets, viewBox } = useGalaxy(seed);
+
+  const tilePoly = useMemo(() => tilePath(), []);
+  const planetByCell = useMemo(() => {
+    const map = new Map();
+    planets.forEach(p => map.set(`${p.r}-${p.c}`, p));
+    return map;
+  }, [planets]);
 
   return (
     <div className="app">
-      {/* Top bar */}
-      <header className="topbar">
-        <div className="brand">
-          <span className="logo">★</span>
-          <span className="title">On-Chain Starlanes</span>
+      <div className="hud">
+        <h1>Stellar Tactics – Grid Template</h1>
+        <div className="controls">
+          <button onClick={() => setSeed(Math.floor(Math.random() * 1e9))}>Randomize</button>
+          <button onClick={() => setSeed(SEED_DEFAULT)}>Reset</button>
         </div>
-        <div className="actions">
-          <div className="zoom">
-            <button className="btn" onClick={onZoomOut} aria-label="Zoom out">−</button>
-            <span className="zoom-value">{Math.round(zoom * 100)}%</span>
-            <button className="btn" onClick={onZoomIn} aria-label="Zoom in">+</button>
-          </div>
-          <button className="btn primary">Connect Wallet</button>
-        </div>
-      </header>
+      </div>
 
-      <main className="main">
-        {/* HUD / Sidebar (collapses to bottom sheet on mobile) */}
-        <aside className="hud">
-          <h3>Sector</h3>
-          <div className="kv"><span>Coords</span><span>{selectedCell.x},{selectedCell.y}</span></div>
-          {selectedCell.hasPlanet ? (
-            <>
-              <div className="kv"><span>Planet</span><span>{selectedCell.kind}</span></div>
-              <div className="kv"><span>Level</span><span>{selectedCell.level}</span></div>
-              <div className="kv"><span>Owner</span><span>{selectedCell.owner ?? "Unclaimed"}</span></div>
-              <div className="kv"><span>Metal</span><span>{selectedCell.resources.metal}</span></div>
-              <div className="kv"><span>Crystal</span><span>{selectedCell.resources.crystal}</span></div>
-              <div className="hud-actions">
-                <button className="btn subtle">Inspect</button>
-                <button className="btn subtle">Send Fleet</button>
-                <button className="btn subtle">Claim</button>
-              </div>
-            </>
-          ) : (
-            <div className="empty">No planet here.</div>
-          )}
-        </aside>
+      {/* starfield background layers */}
+      <div className="space-bg" />
+      <div className="space-stars" />
 
-        {/* Grid */}
-        <section className="grid-wrap">
-          <div
-            className="grid"
-            ref={gridRef}
-            style={{ transform: `scale(${zoom})` }}
-          >
-            {board.map((cell) => (
-              <GridCell
-                key={cell.id}
-                cell={cell}
-                selected={cell.id === selectedId}
-                onSelect={() => setSelectedId(cell.id)}
-              />
-            ))}
-          </div>
-        </section>
-      </main>
+      <svg className="scene" viewBox={viewBox} role="img" aria-label="isometric space grid">
+        {planetDefs()}
 
-      <footer className="footer">
-        <span>Tip: Use arrow keys to move. Zoom with mouse wheel or the buttons.</span>
+        {/* subtle purple nebula on the right (like the reference) */}
+        <g opacity="0.8" filter="url(#glow)">
+          <circle cx={(GRID_SIZE * TILE_W)} cy={(GRID_SIZE * TILE_H) / 2} r={220} fill="url(#nebulaPurple)" />
+          <circle cx={(GRID_SIZE * TILE_W) * 0.9} cy={(GRID_SIZE * TILE_H) * 0.3} r={160} fill="url(#nebulaPurple)" />
+          <circle cx={(GRID_SIZE * TILE_W) * 0.95} cy={(GRID_SIZE * TILE_H) * 0.7} r={130} fill="url(#nebulaPurple)" />
+        </g>
+
+        {/* grid */}
+        <g className="grid">
+          {tiles.map(t => (
+            <g key={t.id} transform={`translate(${t.x}, ${t.y})`}>
+              <path d={tilePoly} className="tile" />
+              {/* hover highlight ring */}
+              <path d={tilePoly} className="tile-outline" />
+            </g>
+          ))}
+        </g>
+
+        {/* planets (centered inside their tiles) */}
+        <g className="planets">
+          {tiles.map(t => {
+            const p = planetByCell.get(t.id);
+            if (!p) return null;
+            return (
+              <g key={`p-${t.id}`} transform={`translate(${t.x}, ${t.y})`}>
+                {/* raise a bit visually to sit "on top" of the tile */}
+                <g transform={`translate(0, -6)`}>
+                  <Planet type={p.type} r={18} />
+                </g>
+              </g>
+            );
+          })}
+        </g>
+      </svg>
+
+      <footer className="legend">
+        <div className="badge terran">Terran</div>
+        <div className="badge desert">Desert</div>
+        <div className="badge ice">Ice</div>
+        <div className="badge lava">Lava</div>
+        <div className="badge gas">Gas Giant</div>
+        <div className="badge metallic">Metallic</div>
       </footer>
     </div>
-  );
-}
-
-function GridCell({ cell, selected, onSelect }) {
-  return (
-    <button
-      id={`cell-${cell.id}`}
-      className={`cell ${selected ? "selected" : ""}`}
-      onClick={onSelect}
-      aria-label={`Cell ${cell.x},${cell.y}${cell.hasPlanet ? " with planet" : ""}`}
-    >
-      <span className="coords">{cell.x},{cell.y}</span>
-
-      {cell.hasPlanet && (
-        <span
-          className={`planet ${cell.kind}`}
-          style={{ width: cell.size + "px", height: cell.size + "px" }}
-        />
-      )}
-    </button>
   );
 }
