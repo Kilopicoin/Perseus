@@ -89,6 +89,7 @@ html, body, #root {
   position:absolute; inset:0;
   width:100%; height:100%;
   z-index:2;
+  shape-rendering: optimizeSpeed; /* hint: favor speed for many vectors */
 }
 
 /* Grid styling */
@@ -97,27 +98,24 @@ html, body, #root {
   stroke: var(--grid);
   stroke-width: 1;
 }
-.grid .tile:hover{
-  fill: rgba(40,52,86,0.75);
-}
-.grid .tile-outline{
-  fill:none;
-  stroke: rgba(160,190,255,0.12);
-  stroke-width: 1.2;
-  opacity:0;
-  transition: opacity .12s ease;
-}
-.grid g:hover .tile-outline{
-  opacity:1;
+
+/* single movable outline (instead of per-tile :hover) */
+.tile-hover-outline{
+  fill: none;
   stroke: var(--grid-hi);
+  stroke-width: 1.2;
+  pointer-events: none;
+  will-change: transform; /* make transform updates cheap */
 }
 
 /* De-emphasize the non-visible area a bit (under the cloud) */
-.grid g.outer .tile,
-.grid g.outer .tile-outline{
+.grid g.outer .tile{
   opacity: 0.6;
-  pointer-events: none;
+  pointer-events: none; /* avoid hover processing in the outer area */
 }
+
+/* Planets shouldn't block tile hover targeting */
+.planets { pointer-events: none; }
 
 /* Planet labels */
 .legend{
@@ -145,3 +143,6 @@ html, body, #root {
 
 /* overlay should not capture pointer events */
 .cloud-overlay { pointer-events: none; }
+
+
+
