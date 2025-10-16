@@ -2,7 +2,8 @@ import React, { useMemo, useState } from "react";
 import "./App.css";
 
 /** ---------- Config ---------- */
-const GRID_SIZE = 11;                 // 11x11
+const GRID_SIZE = 20;                 // full logical grid: 20x20
+const VISIBLE_SIZE = 11;              // keep the center 11x11 visible
 const TILE_W = 96;                    // tile width
 const TILE_H = 48;                    // tile height (isometric diamond)
 const PLANET_DENSITY = 0.18;          // ~18% of tiles get planets
@@ -10,7 +11,6 @@ const SEED_DEFAULT = 1337;
 
 /** ---------- Utilities ---------- */
 function mulberry32(a) {
-  // tiny seeded PRNG for repeatable randomness
   return function () {
     let t = (a += 0x6d2b79f5);
     t = Math.imul(t ^ (t >>> 15), t | 1);
@@ -20,7 +20,6 @@ function mulberry32(a) {
 }
 
 function isoPos(row, col) {
-  // classic isometric (diamond) projection
   const x = (col - row) * (TILE_W / 2);
   const y = (col + row) * (TILE_H / 2);
   return { x, y };
@@ -33,17 +32,9 @@ function tilePath() {
 }
 
 /** Planet palette & renderers (pure SVG) */
-const PLANET_TYPES = [
-  "terran",
-  "desert",
-  "ice",
-  "lava",
-  "gas",
-  "metallic",
-];
+const PLANET_TYPES = ["terran", "desert", "ice", "lava", "gas", "metallic"];
 
 function planetDefs() {
-  // gradients, glows, etc.
   return (
     <defs>
       {/* soft stars glow */}
@@ -51,7 +42,6 @@ function planetDefs() {
         <feGaussianBlur stdDeviation="6" result="coloredBlur" />
         <feMerge>
           <feMergeNode in="coloredBlur" />
-          <feMergeNode in="SourceGraphic" />
         </feMerge>
       </filter>
 
@@ -108,6 +98,23 @@ function planetDefs() {
         <stop offset="0%" stopColor="#b46cff" stopOpacity="0.55" />
         <stop offset="100%" stopColor="#301146" stopOpacity="0" />
       </radialGradient>
+
+      {/* --- Space cloud overlay bits --- */}
+      {/* noisy cloud generator */}
+      <filter id="spaceCloud" x="-20%" y="-20%" width="140%" height="140%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.012" numOctaves="4" seed="42" result="noise"/>
+        <feColorMatrix
+          in="noise"
+          type="matrix"
+          values="
+            0.6 0   0   0   0.15
+            0   0.5 0   0   0.10
+            0   0   0.8 0   0.30
+            0   0   0   1   0
+          "
+        />
+        <feGaussianBlur stdDeviation="10"/>
+      </filter>
     </defs>
   );
 }
@@ -120,7 +127,6 @@ function Planet({ type, r = 18 }) {
       <g filter="url(#shadow)">
         <circle r={r} fill="url(#grad-gas)" />
         <circle r={r - 1} fill="url(#gas-bands)" opacity="0.9" clipPath={`inset(0 round ${r}px)`} />
-        {/* ring */}
         <ellipse rx={r + 10} ry={r / 2.3} fill="none" stroke="#cbb7ff" strokeOpacity="0.7" strokeWidth="2" transform="rotate(-18)" />
         <circle r={r} fill="transparent" stroke={stroke} strokeWidth="0.8" />
       </g>
@@ -177,13 +183,20 @@ function useGalaxy(seed) {
     return p;
   }, [rnd]);
 
-  // ViewBox bounds
+  // ViewBox bounds (entire 20x20 so the cloud can cover outer area)
   const minX = (-(GRID_SIZE - 1) * (TILE_W / 2)) - TILE_W;
   const maxX = ((GRID_SIZE - 1) * (TILE_W / 2)) + TILE_W;
   const minY = 0 - TILE_H;
   const maxY = (GRID_SIZE - 1 + GRID_SIZE - 1) * (TILE_H / 2) + TILE_H;
 
   return { tiles, planets, viewBox: `${minX} ${minY} ${maxX - minX} ${maxY - minY}` };
+}
+
+/** helpers for visible window */
+const VISIBLE_START = Math.floor((GRID_SIZE - VISIBLE_SIZE) / 2);
+const VISIBLE_END = VISIBLE_START + VISIBLE_SIZE - 1;
+function isVisibleRC(r, c) {
+  return r >= VISIBLE_START && r <= VISIBLE_END && c >= VISIBLE_START && c <= VISIBLE_END;
 }
 
 /** ---------- App ---------- */
@@ -222,31 +235,66 @@ export default function App() {
           <circle cx={(GRID_SIZE * TILE_W) * 0.95} cy={(GRID_SIZE * TILE_H) * 0.7} r={130} fill="url(#nebulaPurple)" />
         </g>
 
+        {/* ---- MASK: show cloud only OUTSIDE the 11x11 region ---- */}
+        <mask id="mask-cloud-outside">
+          {/* White = let cloud show; Black = cut a hole (keep clean center) */}
+          <rect x="-99999" y="-99999" width="199999" height="199999" fill="white" />
+          {/* draw the 11x11 tiles in black to punch the hole */}
+          <g transform="translate(0,0)">
+            {tiles.map(t => {
+              if (!isVisibleRC(t.r, t.c)) return null;
+              return (
+                <g key={`hole-${t.id}`} transform={`translate(${t.x}, ${t.y})`}>
+                  <path d={tilePoly} fill="black" />
+                </g>
+              );
+            })}
+          </g>
+        </mask>
+
         {/* grid */}
         <g className="grid">
-          {tiles.map(t => (
-            <g key={t.id} transform={`translate(${t.x}, ${t.y})`}>
-              <path d={tilePoly} className="tile" />
-              {/* hover highlight ring */}
-              <path d={tilePoly} className="tile-outline" />
-            </g>
-          ))}
+          {tiles.map(t => {
+            const outer = !isVisibleRC(t.r, t.c);
+            return (
+              <g key={t.id} transform={`translate(${t.x}, ${t.y})`} className={outer ? "outer" : ""}>
+                <path d={tilePoly} className="tile" />
+                <path d={tilePoly} className="tile-outline" />
+              </g>
+            );
+          })}
         </g>
 
-        {/* planets (centered inside their tiles) */}
+        {/* planets (only the ones that happen to be in the center will be clearly visible) */}
         <g className="planets">
           {tiles.map(t => {
             const p = planetByCell.get(t.id);
             if (!p) return null;
             return (
               <g key={`p-${t.id}`} transform={`translate(${t.x}, ${t.y})`}>
-                {/* raise a bit visually to sit "on top" of the tile */}
                 <g transform={`translate(0, -6)`}>
                   <Planet type={p.type} r={18} />
                 </g>
               </g>
             );
           })}
+        </g>
+
+        {/* ---- CLOUD OVERLAY (sits on top, but NOT over the 11x11 hole) ---- */}
+        <g className="cloud-overlay" mask="url(#mask-cloud-outside)">
+          {/* one big noisy rect; mask keeps the center clean */}
+          <rect
+            x={-5000}
+            y={-5000}
+            width={10000}
+            height={10000}
+            filter="url(#spaceCloud)"
+            opacity="0.9"
+          />
+          {/* a little extra soft glow so the edge feels natural */}
+          <g opacity="0.35" filter="url(#glow)">
+            <circle cx="0" cy="0" r={1200} fill="url(#nebulaPurple)" />
+          </g>
         </g>
       </svg>
 

@@ -112,6 +112,13 @@ html, body, #root {
   stroke: var(--grid-hi);
 }
 
+/* De-emphasize the non-visible area a bit (under the cloud) */
+.grid g.outer .tile,
+.grid g.outer .tile-outline{
+  opacity: 0.6;
+  pointer-events: none;
+}
+
 /* Planet labels */
 .legend{
   position:absolute;
@@ -135,3 +142,6 @@ html, body, #root {
 .badge.lava{ color:#ff8d66; }
 .badge.gas{ color:#cbb7ff; }
 .badge.metallic{ color:#cfd6de; }
+
+/* overlay should not capture pointer events */
+.cloud-overlay { pointer-events: none; }
