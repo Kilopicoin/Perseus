@@ -146,3 +146,108 @@ html, body, #root {
 
 
 
+
+
+/* -------- Gate Overlay -------- */
+.gate {
+  position: fixed;
+  inset: 0;
+  background: #000; /* full black */
+  display: grid;
+  place-items: center;
+  z-index: 9999;
+}
+
+.gate-card {
+  width: min(92vw, 520px);
+  background: #0b0b0b;
+  border: 1px solid #222;
+  border-radius: 16px;
+  padding: 20px;
+  color: #eaeaea;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+}
+
+.gate-card h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.gate-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 12px 0 16px;
+}
+
+.gate-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gate-input label {
+  font-size: 12px;
+  color: #cfcfcf;
+}
+
+.gate-input input {
+  all: unset;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #333;
+  background: #111;
+  color: #fff;
+}
+
+.gate-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.gate-btn {
+  all: unset;
+  background: linear-gradient(180deg, #2a2a2a, #1a1a1a);
+  border: 1px solid #3a3a3a;
+  padding: 10px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.gate-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.gate-hint {
+  font-size: 12px;
+  color: #bcbcbc;
+}
+
+.gate-error {
+  margin-top: 10px;
+  color: #ff8a8a;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+
+
+.coord-tip{
+  background: linear-gradient(180deg, rgba(12,16,32,0.95), rgba(10,14,28,0.9));
+  border: 1px solid rgba(159,180,255,0.5);
+  padding: 8px 10px;
+  border-radius: 10px;
+  box-shadow: 0 8px 22px rgba(0,0,0,0.45);
+  font-size: 12px;
+  color: var(--hud);
+  cursor: pointer;
+  max-width: 240px;
+}
+.coord-tip-main{ font-weight: 600; letter-spacing: .2px; }
+.coord-tip-sub{ opacity:.8; margin-top:4px; font-size:11px; }
+

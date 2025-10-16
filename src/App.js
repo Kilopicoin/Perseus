@@ -1,12 +1,13 @@
 import React, { useMemo, useState, useRef, useEffect } from "react";
 import "./App.css";
+import { formatEther } from "ethers";
+import { getContractMain, getSignerContractMain } from "./contracts/contractMain";
 
 /** ---------- Config ---------- */
 const GRID_SIZE = 100;                // full logical grid: 100x100
 const VISIBLE_SIZE = 11;              // keep the center 11x11 visible
 
 // 🔒 Lock the on-screen scale to what you had before (20x20 view sizing)
-// This keeps tile size / zoom identical to your current app.
 const SIZING_GRID = 20;               // used for scaling only
 
 const TILE_W = 96;                    // tile width
@@ -173,19 +174,7 @@ function useGalaxy(seed) {
     return p;
   }, [rnd]);
 
-  // Calculate viewBox centered on visible 11x11 area
-  const VISIBLE_START = Math.floor((GRID_SIZE - VISIBLE_SIZE) / 2);
-  const VISIBLE_END = VISIBLE_START + VISIBLE_SIZE - 1;
-  const centerRow = (VISIBLE_START + VISIBLE_END) / 2;
-  const centerCol = (VISIBLE_START + VISIBLE_END) / 2;
-  const { x: centerX, y: centerY } = isoPos(centerRow, centerCol);
-
-  const width = SIZING_GRID * TILE_W;
-  const height = SIZING_GRID * TILE_H;
-  const minX = centerX - width / 2;
-  const minY = centerY - height / 2;
-
-  return { tiles, planets, viewBox: `${minX} ${minY} ${width} ${height}`, bounds: { minX, minY, width, height }, VISIBLE_START, VISIBLE_END };
+  return { tiles, planets };
 }
 
 function isVisibleRC(r, c, VISIBLE_START, VISIBLE_END) {
@@ -195,7 +184,7 @@ function isVisibleRC(r, c, VISIBLE_START, VISIBLE_END) {
 /** ---------- App ---------- */
 export default function App() {
   const [seed, setSeed] = useState(SEED_DEFAULT);
-  const { tiles, planets, viewBox, bounds, VISIBLE_START, VISIBLE_END } = useGalaxy(seed);
+  const { tiles, planets } = useGalaxy(seed);
 
   const tilePoly = useMemo(() => tilePath(), []);
   const planetByCell = useMemo(() => {
@@ -209,6 +198,32 @@ export default function App() {
   const svgRef = useRef(null);
   const hoverRef = useRef(null);
 
+  /** ---- Gate + contract state ---- */
+  const [x, setX] = useState("");
+  const [y, setY] = useState("");
+  const [feeWei, setFeeWei] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [ownedCell, setOwnedCell] = useState(null); // {x, y} once we occupy
+
+  // NEW: right-click coordinate tooltip state
+  const [tip, setTip] = useState(null); // {x: clientX, y: clientY, r, c}
+
+  // Fetch occupyFeeWei on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const c = getContractMain();
+        const fee = await c.occupyFeeWei();
+        setFeeWei(fee);
+      } catch (e) {
+        console.error(e);
+        setError("Failed to read occupy fee from contract.");
+      }
+    })();
+  }, []);
+
+  // Hover outline handler
   useEffect(() => {
     const svg = svgRef.current;
     const hover = hoverRef.current;
@@ -239,9 +254,148 @@ export default function App() {
     };
   }, []);
 
+  // NEW: right-click -> show coord tooltip; left-click anywhere -> hide
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const onContext = (e) => {
+      const g = e.target.closest('g[data-r][data-c]');
+      if (!g) return; // not on a tile
+      e.preventDefault(); // block browser context menu
+      const r = parseInt(g.dataset.r, 10);
+      const c = parseInt(g.dataset.c, 10);
+      setTip({ x: e.clientX + 8, y: e.clientY + 8, r, c });
+    };
+
+    const onClick = () => setTip(null);
+
+    svg.addEventListener('contextmenu', onContext);
+    document.addEventListener('click', onClick);
+    return () => {
+      svg.removeEventListener('contextmenu', onContext);
+      document.removeEventListener('click', onClick);
+    };
+  }, []);
+
+  // Optional: click tooltip to copy "X,Y"
+  function copyTip() {
+    if (!tip) return;
+    const text = `${tip.r},${tip.c}`;
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(() => {});
+    }
+  }
+
+  /** ---- Tx call ---- */
+  async function handleOccupy() {
+    setError("");
+    try {
+      // basic validation
+      const xi = Number(x);
+      const yi = Number(y);
+      if (!Number.isInteger(xi) || !Number.isInteger(yi)) {
+        setError("Coordinates must be integers.");
+        return;
+      }
+      if (xi < 0 || yi < 0 || xi >= GRID_SIZE || yi >= GRID_SIZE) {
+        setError(`Coordinates must be within 0..${GRID_SIZE - 1}.`);
+        return;
+      }
+      if (!feeWei) {
+        setError("Occupy fee is not loaded yet.");
+        return;
+      }
+
+      setBusy(true);
+      const c = await getSignerContractMain();
+
+      // Send exact fee required by contract
+      const tx = await c.occupyAt(xi, yi, { value: feeWei });
+      await tx.wait();
+
+      // Success in this session: we now know this wallet owns (xi, yi)
+      setOwnedCell({ x: xi, y: yi });
+    } catch (e) {
+      console.error(e);
+      const msg = (e?.message || "").toLowerCase();
+      if (msg.includes("outofbounds")) setError("Out of bounds.");
+      else if (msg.includes("alreadyoccupied")) setError("That cell is already occupied.");
+      else if (msg.includes("wrongfee")) setError("Wrong fee sent.");
+      else if (msg.includes("user rejected")) setError("Transaction was rejected.");
+      else setError("Failed to occupy the cell. See console for details.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** ---- Viewbox / centering logic ---- */
+  // If we have an owned cell, center around it; otherwise center on the default 11x11 midpoint
+  const sizingWidth = SIZING_GRID * TILE_W;
+  const sizingHeight = SIZING_GRID * TILE_H;
+
+  let viewMinX = 0, viewMinY = 0, viewWidth = sizingWidth, viewHeight = sizingHeight;
+  if (ownedCell) {
+    const { x: cx, y: cy } = isoPos(ownedCell.x, ownedCell.y);
+    viewMinX = cx - (sizingWidth / 2);
+    viewMinY = cy - (sizingHeight / 2);
+  } else {
+    const VISIBLE_START = Math.floor((GRID_SIZE - VISIBLE_SIZE) / 2);
+    const VISIBLE_END = VISIBLE_START + VISIBLE_SIZE - 1;
+    const centerRow = (VISIBLE_START + VISIBLE_END) / 2;
+    const centerCol = (VISIBLE_START + VISIBLE_END) / 2;
+    const { x: centerX, y: centerY } = isoPos(centerRow, centerCol);
+    viewMinX = centerX - (sizingWidth / 2);
+    viewMinY = centerY - (sizingHeight / 2);
+  }
+
+  const viewBox = `${viewMinX} ${viewMinY} ${viewWidth} ${viewHeight}`;
+  const bounds = { minX: viewMinX, minY: viewMinY, width: viewWidth, height: viewHeight };
+
+  // Compute visible 11x11 window relative to the chosen center (keeps your previous rendering rules)
+  const VISIBLE_START = ownedCell
+    ? Math.max(0, Math.min(GRID_SIZE - VISIBLE_SIZE, ownedCell.x - Math.floor(VISIBLE_SIZE / 2)))
+    : Math.floor((GRID_SIZE - VISIBLE_SIZE) / 2);
+
+  const VISIBLE_END = VISIBLE_START + VISIBLE_SIZE - 1;
+
+  /** ---- UI ---- */
+  const showGate = !ownedCell; // gate is visible until we have an owned cell in this session
+
   return (
     <div className="app">
-      <div className="hud">
+      {/* GATE */}
+      {showGate && (
+        <div className="gate">
+          <div className="gate-card">
+            <h2>Claim a Cell</h2>
+            <div className="gate-row">
+              <div className="gate-input">
+                <label htmlFor="gx">X (0–{GRID_SIZE - 1})</label>
+                <input id="gx" type="number" min="0" max={GRID_SIZE - 1} value={x} onChange={e => setX(e.target.value)} />
+              </div>
+              <div className="gate-input">
+                <label htmlFor="gy">Y (0–{GRID_SIZE - 1})</label>
+                <input id="gy" type="number" min="0" max={GRID_SIZE - 1} value={y} onChange={e => setY(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="gate-actions">
+              <button className="gate-btn" disabled={busy} onClick={handleOccupy}>
+                {busy ? "Occupying…" : "Occupy"}
+              </button>
+              <div className="gate-hint">
+                Fee: {feeWei ? `${formatEther(feeWei)} ETH` : "loading…"}
+              </div>
+            </div>
+
+            {error && <div className="gate-error">{error}</div>}
+          </div>
+        </div>
+      )}
+
+      {/* HUD & scene appear underneath; the gate simply covers them until you own a cell */}
+      <div className="hud" style={{ display: showGate ? "none" : "flex" }}>
         <h1>Stellar Tactics – Grid Template</h1>
         <div className="controls">
           <button onClick={() => setSeed(Math.floor(Math.random() * 1e9))}>Randomize</button>
@@ -249,10 +403,17 @@ export default function App() {
         </div>
       </div>
 
-      <div className="space-bg" />
-      <div className="space-stars" />
+      <div className="space-bg" style={{ display: showGate ? "none" : "block" }} />
+      <div className="space-stars" style={{ display: showGate ? "none" : "block" }} />
 
-      <svg ref={svgRef} className="scene" viewBox={viewBox} role="img" aria-label="isometric space grid">
+      <svg
+        ref={svgRef}
+        className="scene"
+        viewBox={viewBox}
+        role="img"
+        aria-label="isometric space grid"
+        style={{ visibility: showGate ? "hidden" : "visible" }}
+      >
         {defs}
 
         <g opacity="0.8" filter="url(#glow)">
@@ -281,6 +442,8 @@ export default function App() {
                 key={t.id}
                 data-x={t.x}
                 data-y={t.y}
+                data-r={t.r}       
+                data-c={t.c}
                 transform={`translate(${t.x}, ${t.y})`}
                 className={outer ? "outer" : ""}
               >
@@ -314,7 +477,7 @@ export default function App() {
             opacity="0.9"
           />
           <g opacity="0.35" filter="url(#glow)">
-            <circle cx="0" cy="0" r={1200} fill="url(#nebulaPurple)" />
+            <circle cx="0" cy="0" r="1200" fill="url(#nebulaPurple)" />
           </g>
         </g>
 
@@ -326,7 +489,26 @@ export default function App() {
         />
       </svg>
 
-      <footer className="legend">
+      {/* NEW: coordinate tooltip (right-click) */}
+      {tip && (
+        <div
+          className="coord-tip"
+          onClick={copyTip}
+          style={{
+            position: "fixed",
+            left: tip.x,
+            top: tip.y,
+            zIndex: 10000,
+            userSelect: "none"
+          }}
+          title="Click to copy"
+        >
+          <div className="coord-tip-main">X: {tip.r} &nbsp; Y: {tip.c}</div>
+          <div className="coord-tip-sub">Right-click another cell or click anywhere to hide</div>
+        </div>
+      )}
+
+      <footer className="legend" style={{ display: showGate ? "none" : "flex" }}>
         <div className="badge terran">Terran</div>
         <div className="badge desert">Desert</div>
         <div className="badge ice">Ice</div>
