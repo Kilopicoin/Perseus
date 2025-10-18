@@ -206,6 +206,20 @@ export default function App() {
   const dragRef = useRef({ active: false, start: { x: 0, y: 0 }, orig: { x: 0, y: 0 } });
   const panLayerRef = useRef(null);
   const rafIdRef = useRef(0);
+  const [resourceId, setResourceId] = useState(0);
+
+  const RESOURCES = [
+  { id: 0, name: "Titanium Alloy" },
+  { id: 1, name: "Carbon Nanofibers" },
+  { id: 2, name: "Fusion Fuel" },
+  { id: 3, name: "Plasma Cells" },
+  { id: 4, name: "Silicon Crystals" },
+  { id: 5, name: "Quantum Circuits" },
+  { id: 6, name: "Dark Matter" },
+  { id: 7, name: "Antimatter" },
+];
+
+
 
   // --- check if the currently connected wallet already owns a cell
   async function checkExistingClaim() {
@@ -219,7 +233,7 @@ export default function App() {
       const addr = accounts[0];
       const c = getContractMain();
       // Solidity: (bool has, uint8 x, uint8 y)
-      const [has, fx, fy] = await c.getFirstCell(addr);
+      const [has, fx, fy /*, resId*/] = await c.getFirstCell(addr);
 
       if (has) {
         setOwnedCell({ x: Number(fx), y: Number(fy) });
@@ -329,44 +343,49 @@ export default function App() {
 
   /** ---- Tx call ---- */
   async function handleOccupy() {
-    setError("");
-    try {
-      const xi = Number(x);
-      const yi = Number(y);
-      if (!Number.isInteger(xi) || !Number.isInteger(yi)) {
-        setError("Coordinates must be integers.");
-        return;
-      }
-      if (xi < 0 || yi < 0 || xi >= GRID_SIZE || yi >= GRID_SIZE) {
-        setError(`Coordinates must be within 0..${GRID_SIZE - 1}.`);
-        return;
-      }
-      if (!feeWei) {
-        setError("Occupy fee is not loaded yet.");
-        return;
-      }
-
-      setBusy(true);
-      const c = await getSignerContractMain();
-
-      // Send exact fee required by contract
-      const tx = await c.occupyAt(xi, yi, { value: feeWei });
-      await tx.wait();
-
-      // Success in this session: we now know this wallet owns (xi, yi)
-      setOwnedCell({ x: xi, y: yi });
-    } catch (e) {
-      console.error(e);
-      const msg = (e?.message || "").toLowerCase();
-      if (msg.includes("outofbounds")) setError("Out of bounds.");
-      else if (msg.includes("alreadyoccupied")) setError("That cell is already occupied.");
-      else if (msg.includes("wrongfee")) setError("Wrong fee sent.");
-      else if (msg.includes("user rejected")) setError("Transaction was rejected.");
-      else setError("Failed to occupy the cell. See console for details.");
-    } finally {
-      setBusy(false);
+  setError("");
+  try {
+    const xi = Number(x);
+    const yi = Number(y);
+    if (!Number.isInteger(xi) || !Number.isInteger(yi)) {
+      setError("Coordinates must be integers.");
+      return;
     }
+    if (xi < 0 || yi < 0 || xi >= GRID_SIZE || yi >= GRID_SIZE) {
+      setError(`Coordinates must be within 0..${GRID_SIZE - 1}.`);
+      return;
+    }
+    if (resourceId < 0 || resourceId > 7) {
+      setError("Invalid resource type.");
+      return;
+    }
+    if (!feeWei) {
+      setError("Occupy fee is not loaded yet.");
+      return;
+    }
+
+    setBusy(true);
+    const c = await getSignerContractMain();
+
+    // NEW: pass resourceId
+    const tx = await c.occupyAt(xi, yi, resourceId, { value: feeWei });
+    await tx.wait();
+
+    setOwnedCell({ x: xi, y: yi });
+  } catch (e) {
+    console.error(e);
+    const msg = (e?.message || "").toLowerCase();
+    if (msg.includes("outofbounds")) setError("Out of bounds.");
+    else if (msg.includes("alreadyoccupied")) setError("That cell is already occupied.");
+    else if (msg.includes("wrongfee")) setError("Wrong fee sent.");
+    else if (msg.includes("invalidresourcetype")) setError("Invalid resource type.");
+    else if (msg.includes("user rejected")) setError("Transaction was rejected.");
+    else setError("Failed to occupy the cell. See console for details.");
+  } finally {
+    setBusy(false);
   }
+}
+
 
   /** ---- Viewbox / centering logic ---- */
   // Base center (NO pan applied here; pan is an SVG group transform)
@@ -527,16 +546,42 @@ export default function App() {
         <div className="gate">
           <div className="gate-card">
             <h2>Claim a Cell</h2>
-            <div className="gate-row">
-              <div className="gate-input">
-                <label htmlFor="gx">X (0–{GRID_SIZE - 1})</label>
-                <input id="gx" type="number" min="0" max={GRID_SIZE - 1} value={x} onChange={e => setX(e.target.value)} />
-              </div>
-              <div className="gate-input">
-                <label htmlFor="gy">Y (0–{GRID_SIZE - 1})</label>
-                <input id="gy" type="number" min="0" max={GRID_SIZE - 1} value={y} onChange={e => setY(e.target.value)} />
-              </div>
-            </div>
+            <div className="gate-row" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+  <div className="gate-input">
+    <label htmlFor="gx">X (0–{GRID_SIZE - 1})</label>
+    <input id="gx" type="number" min="0" max={GRID_SIZE - 1} value={x} onChange={e => setX(e.target.value)} />
+  </div>
+
+  <div className="gate-input">
+    <label htmlFor="gy">Y (0–{GRID_SIZE - 1})</label>
+    <input id="gy" type="number" min="0" max={GRID_SIZE - 1} value={y} onChange={e => setY(e.target.value)} />
+  </div>
+
+  <div className="gate-input">
+    <label htmlFor="gres">Resource Type</label>
+    <select
+      id="gres"
+      value={resourceId}
+      onChange={(e) => setResourceId(Number(e.target.value))}
+      style={{
+        all: "unset",
+        padding: "10px 12px",
+        borderRadius: "10px",
+        border: "1px solid #333",
+        background: "#111",
+        color: "#fff",
+        cursor: "pointer"
+      }}
+    >
+      {RESOURCES.map(r => (
+        <option key={r.id} value={r.id} style={{ color: "#000" }}>
+          {r.name}
+        </option>
+      ))}
+    </select>
+  </div>
+</div>
+
 
             <div className="gate-actions">
               <button className="gate-btn" disabled={busy} onClick={handleOccupy}>
