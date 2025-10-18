@@ -27,8 +27,7 @@ function tilePath() {
   return `M 0 ${-h} L ${w2} 0 L 0 ${h} L ${-w2} 0 Z`;
 }
 
-// ⬇️ planet + nebula defs (nebula seeded for deterministic background)
-function planetDefs(nebulaSeed) {
+function planetDefs() {
   return (
     <defs>
       <filter id="glow" x="-30%" y="-30%" width="160%" height="160%" filterUnits="objectBoundingBox">
@@ -87,29 +86,6 @@ function planetDefs(nebulaSeed) {
         <stop offset="0%" stopColor="#b46cff" stopOpacity="0.55" />
         <stop offset="100%" stopColor="#301146" stopOpacity="0" />
       </radialGradient>
-
-      {/* ---- World nebula (background) ---- */}
-      <radialGradient id="nebula-colors" cx="55%" cy="45%" r="85%">
-        <stop offset="0%"  stopColor="#c8a6ff" />
-        <stop offset="35%" stopColor="#8b6fe0" />
-        <stop offset="70%" stopColor="#2b1f46" />
-        <stop offset="100%" stopColor="#0a0f22" />
-      </radialGradient>
-      <filter id="nebula-cloud">
-        <feTurbulence
-          type="fractalNoise"
-          baseFrequency="0.010 0.018"
-          numOctaves="3"
-          seed={nebulaSeed}
-          result="noise"
-        />
-        <feColorMatrix in="noise" type="luminanceToAlpha" result="alpha" />
-        <feGaussianBlur in="alpha" stdDeviation="1.2" result="alphaBlur" />
-        <feComponentTransfer in="alphaBlur" result="alphaSoft">
-          <feFuncA type="gamma" exponent="1.6" amplitude="1.25" offset="0" />
-        </feComponentTransfer>
-        <feComposite in="SourceGraphic" in2="alphaSoft" operator="in" />
-      </filter>
     </defs>
   );
 }
@@ -179,10 +155,8 @@ function getVisibleWindow(center /* {x,y} or null */) {
 /** ---------- App ---------- */
 export default function App() {
   const [seed, setSeed] = useState(SEED_DEFAULT);
-  const nebulaSeed = React.useRef(777).current;
-
   const tilePoly = useMemo(() => tilePath(), []);
-  const defs = useMemo(() => planetDefs(nebulaSeed), [nebulaSeed]);
+  const defs = useMemo(() => planetDefs(), []);
 
   const svgRef = useRef(null);
   const hoverRef = useRef(null);
@@ -206,6 +180,63 @@ export default function App() {
   const dragRef = useRef({ active: false, start: { x: 0, y: 0 }, orig: { x: 0, y: 0 } });
   const panLayerRef = useRef(null);
   const rafIdRef = useRef(0);
+
+  // whenever we jump centers (e.g., after claim or account switch), reset pan so view recenters
+  useEffect(() => {
+    setPan({ x: 0, y: 0 });
+    panRef.current = { x: 0, y: 0 };
+    panLayerRef.current?.setAttribute("transform", `translate(0 0)`);
+  }, [seed, ownedCell]);
+
+  function onPointerDown(e) {
+    if (e.button === 2) return; // keep right-click tooltip
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    dragRef.current.active = true;
+    dragRef.current.start = { x: e.clientX, y: e.clientY };
+    dragRef.current.orig  = { ...panRef.current };
+
+    // hide hover while dragging to save work
+    if (hoverRef.current) hoverRef.current.style.display = "none";
+
+    svg.setPointerCapture?.(e.pointerId);
+  }
+
+  function onPointerMove(e) {
+    if (!dragRef.current.active) return;
+    const svg = svgRef.current;
+    const panLayer = panLayerRef.current;
+    if (!svg || !panLayer) return;
+
+    // convert client delta px -> SVG units
+    const rect   = svg.getBoundingClientRect();
+    const scaleX = viewWidth  / rect.width;
+    const scaleY = viewHeight / rect.height;
+
+    const dxPx = e.clientX - dragRef.current.start.x;
+    const dyPx = e.clientY - dragRef.current.start.y;
+
+    const nx = dragRef.current.orig.x + dxPx * scaleX;
+    const ny = dragRef.current.orig.y + dyPx * scaleY;
+
+    panRef.current = { x: nx, y: ny };
+
+    if (!rafIdRef.current) {
+      rafIdRef.current = requestAnimationFrame(() => {
+        rafIdRef.current = 0;
+        panLayer.setAttribute("transform", `translate(${panRef.current.x} ${panRef.current.y})`);
+      });
+    }
+  }
+
+  function onPointerUp(e) {
+    const svg = svgRef.current;
+    dragRef.current.active = false;
+    svg?.releasePointerCapture?.(e.pointerId);
+    // commit once so position persists
+    setPan({ ...panRef.current });
+  }
 
   // --- check if the currently connected wallet already owns a cell
   async function checkExistingClaim() {
@@ -402,123 +433,8 @@ export default function App() {
     makeTilesInWindow(VISIBLE_START_R, VISIBLE_END_R, VISIBLE_START_C, VISIBLE_END_C)
   ), [VISIBLE_START_R, VISIBLE_END_R, VISIBLE_START_C, VISIBLE_END_C]);
 
-  // ---- Full-world (100x100) isometric bounding box for background rect ----
-  const w2 = TILE_W / 2;
-  const h2 = TILE_H / 2;
-  const WORLD = {
-    minX: -GRID_SIZE * w2,
-    minY: -h2,
-    width: GRID_SIZE * TILE_W,
-    height: (GRID_SIZE - 1) * TILE_H + TILE_H, // = GRID_SIZE * TILE_H
-  };
-
-  // ---- Pan limits so the viewBox always stays inside the WORLD rect ----
-  const EDGE_PAD = 0; // increase to allow slight overlap margin
-  const EDGE_PAD_X = 50;
-  const PAN_LIMITS = useMemo(() => {
-    const maxX = viewMinX - WORLD.minX - EDGE_PAD_X; // right-most translate
-    const minX = (viewMinX + viewWidth)  - (WORLD.minX + WORLD.width) + EDGE_PAD_X;  // left-most
-    const maxY = viewMinY - WORLD.minY + EDGE_PAD; // down-most
-    const minY = (viewMinY + viewHeight) - (WORLD.minY + WORLD.height) - EDGE_PAD; // up-most
-    return { minX, maxX, minY, maxY };
-  }, [viewMinX, viewMinY, viewWidth, viewHeight, WORLD.minX, WORLD.minY, WORLD.width, WORLD.height]);
-
-  // whenever we jump centers (e.g., after claim or account switch), reset pan so view recenters and clamp
-  useEffect(() => {
-    const nx = clamp(0, PAN_LIMITS.minX, PAN_LIMITS.maxX);
-    const ny = clamp(0, PAN_LIMITS.minY, PAN_LIMITS.maxY);
-    setPan({ x: nx, y: ny });
-    panRef.current = { x: nx, y: ny };
-    panLayerRef.current?.setAttribute("transform", `translate(${nx} ${ny})`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seed, ownedCell, PAN_LIMITS.minX, PAN_LIMITS.maxX, PAN_LIMITS.minY, PAN_LIMITS.maxY]);
-
-  function onPointerDown(e) {
-    if (e.button === 2) return; // keep right-click tooltip
-    const svg = svgRef.current;
-    if (!svg) return;
-
-    dragRef.current.active = true;
-    dragRef.current.start = { x: e.clientX, y: e.clientY };
-    dragRef.current.orig  = { ...panRef.current };
-
-    // hide hover while dragging to save work
-    if (hoverRef.current) hoverRef.current.style.display = "none";
-
-    svg.setPointerCapture?.(e.pointerId);
-  }
-
-  function onPointerMove(e) {
-    if (!dragRef.current.active) return;
-    const svg = svgRef.current;
-    const panLayer = panLayerRef.current;
-    if (!svg || !panLayer) return;
-
-    // convert client delta px -> SVG units
-    const rect   = svg.getBoundingClientRect();
-    const scaleX = viewWidth  / rect.width;
-    const scaleY = viewHeight / rect.height;
-
-    const dxPx = e.clientX - dragRef.current.start.x;
-    const dyPx = e.clientY - dragRef.current.start.y;
-
-    let nx = dragRef.current.orig.x + dxPx * scaleX;
-    let ny = dragRef.current.orig.y + dyPx * scaleY;
-
-    // ⛳️ keep pan inside gas-cloud bounds
-    nx = clamp(nx, PAN_LIMITS.minX, PAN_LIMITS.maxX);
-    ny = clamp(ny, PAN_LIMITS.minY, PAN_LIMITS.maxY);
-
-    panRef.current = { x: nx, y: ny };
-
-    if (!rafIdRef.current) {
-      rafIdRef.current = requestAnimationFrame(() => {
-        rafIdRef.current = 0;
-        panLayer.setAttribute("transform", `translate(${panRef.current.x} ${panRef.current.y})`);
-      });
-    }
-  }
-
-  function onPointerUp(e) {
-    const svg = svgRef.current;
-    dragRef.current.active = false;
-    svg?.releasePointerCapture?.(e.pointerId);
-    // commit once so position persists (and clamp)
-    const nx = clamp(panRef.current.x, PAN_LIMITS.minX, PAN_LIMITS.maxX);
-    const ny = clamp(panRef.current.y, PAN_LIMITS.minY, PAN_LIMITS.maxY);
-    panRef.current = { x: nx, y: ny };
-    setPan({ ...panRef.current });
-  }
-
   /** ---- UI ---- */
   const showGate = !ownedCell; // gate is visible until we have an owned cell in this session
-
-  // ---------- Diamond path for 11×11 visible region ----------
-  const diamondPath = useMemo(() => {
-    // Four corner tile centers of the 11×11 window
-    const topC    = isoPos(VISIBLE_START_R, VISIBLE_START_C);
-    const rightC  = isoPos(VISIBLE_START_R, VISIBLE_END_C);
-    const bottomC = isoPos(VISIBLE_END_R,   VISIBLE_END_C);
-    const leftC   = isoPos(VISIBLE_END_R,   VISIBLE_START_C);
-
-    const w2 = TILE_W / 2;
-    const h2 = TILE_H / 2;
-
-    // Vertices of the outer diamond that exactly covers tile faces
-    const p1 = { x: topC.x,        y: topC.y - h2     }; // top
-    const p2 = { x: rightC.x + w2, y: rightC.y        }; // right
-    const p3 = { x: bottomC.x,     y: bottomC.y + h2  }; // bottom
-    const p4 = { x: leftC.x - w2,  y: leftC.y         }; // left
-
-    // Optional tiny pad to avoid sub-pixel seams
-    const PAD = 0;
-
-    return `M ${p1.x} ${p1.y - PAD}
-            L ${p2.x + PAD} ${p2.y}
-            L ${p3.x} ${p3.y + PAD}
-            L ${p4.x - PAD} ${p4.y}
-            Z`;
-  }, [VISIBLE_START_R, VISIBLE_START_C, VISIBLE_END_R, VISIBLE_END_C]);
 
   return (
     <div className="app">
@@ -581,43 +497,8 @@ export default function App() {
         {/* Everything that should move with pan goes inside this group */}
         <g ref={panLayerRef} transform={`translate(${pan.x} ${pan.y})`}>
 
-          {/* ---- Mask that hides the nebula INSIDE the isometric 11×11 diamond ---- */}
-          <mask id="nebula-cutout">
-            {/* white = keep, black = hide */}
-            <rect
-              x={WORLD.minX}
-              y={WORLD.minY}
-              width={WORLD.width}
-              height={WORLD.height}
-              fill="white"
-            />
-            <path
-              d={diamondPath}
-              fill="black"
-              stroke="black"        // cover sub-pixel joins
-              strokeWidth="1.5"
-              shapeRendering="crispEdges"
-            />
-          </mask>
-
-          {/* Nebula layers (masked so they don't show in the 11×11 area) */}
-          <g mask="url(#nebula-cutout)">
-            {/* World-sized background that covers the entire 100x100 grid */}
-            <rect
-              className="world-nebula"
-              x={WORLD.minX}
-              y={WORLD.minY}
-              width={WORLD.width}
-              height={WORLD.height}
-              fill="url(#nebula-colors)"
-              filter="url(#nebula-cloud)"
-              opacity="0.7"
-              style={{ mixBlendMode: "screen", pointerEvents: "none" }}
-            />
-
-            <g opacity="0.8" filter="url(#glow)">
-              <circle cx={0} cy={0} r={220} fill="url(#nebulaPurple)" />
-            </g>
+          <g opacity="0.8" filter="url(#glow)">
+            <circle cx={0} cy={0} r={220} fill="url(#nebulaPurple)" />
           </g>
 
           {/* RENDER ONLY 11×11 TILES */}
